@@ -23,14 +23,16 @@ class BrowserScheduler {
         this.init()
     }
     checkResultStatus(vendor, html) {
-        if(vendor.includes('ugg')) {
-            if(html.includes('403 Forbidden')) {
+        if (vendor.includes('ugg')) {
+            if (html.includes('403 Forbidden') || html.includes('429 Too Many Requests') ||
+                html.includes('https://ct.captcha-delivery.com/c2.js')
+            ) {
                 return {
                     status: 403
                 }
             }
         }
-        return  {
+        return {
             status: 200
         }
     }
@@ -67,8 +69,8 @@ class BrowserScheduler {
     }
     taskListListener() {
         setInterval(async () => {
-            let deleteIndex = this.browsers.findIndex(item=>item.status == 'delete')
-            if(deleteIndex > -1) {
+            let deleteIndex = this.browsers.findIndex(item => item.status == 'delete')
+            if (deleteIndex > -1) {
                 this.browsers.splice(deleteIndex, 1);
             }
             if (this.currentTaskNumber != this.taskList.length) {
@@ -168,17 +170,51 @@ class BrowserScheduler {
             }, 1000);
         });
     }
+
+    doDeleteBrowser(penddingBrowsers) {
+        this.sendMessageToAds(`/api/v1/browser/stop?user_id=${penddingBrowsers.userId}`, 'get').then((res) => {
+            console.log(res.data)
+            logger.info(`再次关闭浏览器成功:${penddingBrowsers.userId}`)
+            setTimeout(()=>{
+                this.sendMessageToAds(`/api/v1/user/delete`, 'post', { user_ids: [penddingBrowsers.userId] }).then(res => {
+                    if(res.data.code == 0) {
+                        logger.info(`再次删除浏览器成功:${penddingBrowsers.userId}`)
+                    }else {
+                        logger.error(`再次删除浏览器失败:${penddingBrowsers.userId}`)
+                    }
+                })
+            }, 2000)
+        })
+    }
+
+    deleteBrowser(penddingBrowsers) {
+        this.sendMessageToAds(`/api/v1/browser/stop?user_id=${penddingBrowsers.userId}`, 'get').then((res) => {
+            console.log(res.data)
+            logger.info(`关闭浏览器成功:${penddingBrowsers.userId}`)
+            setTimeout(()=>{
+                this.sendMessageToAds(`/api/v1/user/delete`, 'post', { user_ids: [penddingBrowsers.userId] }).then(res => {
+                    if(res.data.code == 0) {
+                        logger.info(`删除浏览器成功:${penddingBrowsers.userId}`)
+                    }else {
+                        logger.error(`删除浏览器失败:${penddingBrowsers.userId}`)
+                        this.doDeleteBrowser(penddingBrowsers)
+                    }
+                })
+            }, 2000)
+        })
+    }
+
     executeTask(task, penddingBrowsers) {
         // 启动浏览器
         const { url, vendor } = task
 
         this.sendMessageToAds(`/api/v1/browser/start?user_id=${penddingBrowsers.userId}&&open_tabs=1&&headless=0&&clear_cache_after_closing=1`, 'get')
-            .then((async res=>{
-                if(res.status == 200 && res.data.code == 0) {
+            .then((async res => {
+                if (res.status == 200 && res.data.code == 0) {
                     logger.info(`浏览器启动成功 端口:${res.data.data.debug_port}`)
                     let puppeteerUrl = res.data.data.ws.puppeteer
                     logger.info(`浏览器启动成功 puppeteerUrl${puppeteerUrl}`)
-                    
+
                     const browser = await puppeteer.connect({
                         browserWSEndpoint: puppeteerUrl,
                         defaultViewport: null
@@ -189,66 +225,73 @@ class BrowserScheduler {
                     const result = await page.content();
                     await browser.disconnect();
                     logger.info(`设置${url}结果成功`)
-                    
-                    const {status} = this.checkResultStatus(vendor, result)
-                    if(status == 403) {
+
+                    const { status } = this.checkResultStatus(vendor, result)
+                    if (status == 403) {
                         this.results[url] = '403:' + result
-                    }else {
+                    } else {
                         this.results[url] = result
                     }
-                    if(status == '403') {
+                    if (status == '403') {
                         logger.info(`页面出现403开始删除浏览器`)
-                        this.sendMessageToAds(`/api/v1/browser/stop?user_id=${penddingBrowsers.userId}`, 'get').then((res)=>{
-                            console.log(res.data)
-                            logger.info(`关闭浏览器成功:${penddingBrowsers.userId}`)
-                            this.sendMessageToAds(`/api/v1/user/delete`, 'post', {user_ids: [penddingBrowsers.userId]}).then(res=>{
-                                console.log(res.data)
-                                logger.info(`删除浏览器成功:${penddingBrowsers.userId}`)
-                            })
-                        })
+                        const copy = JSON.parse(JSON.stringify(penddingBrowsers));
+                        this.deleteBrowser(copy)
                         penddingBrowsers.status = 'delete'
-                    }else {
+                    } else {
                         penddingBrowsers.status = 'pendding'
                     }
-                    
+
                 }
-            })).catch(e=>{
-                this.sendMessageToAds(`/api/v1/browser/stop?user_id=${penddingBrowsers.userId}`, 'get').then((res)=>{
-                    console.log(res.data)
-                    logger.info(`关闭浏览器成功:${penddingBrowsers.userId}`)
-                    this.sendMessageToAds(`/api/v1/user/delete`, 'post', {user_ids: [penddingBrowsers.userId]}).then(res=>{
-                        console.log(res.data)
-                        logger.info(`删除浏览器成功:${penddingBrowsers.userId}`)
-                    })
-                })
+            })).catch(e => {
                 this.results[url] = '500:浏览器启动失败'
+                console.error(e)
+                const copy = JSON.parse(JSON.stringify(penddingBrowsers));
+                this.deleteBrowser(copy)
+                
                 penddingBrowsers.status = 'delete'
                 console.error(e)
                 logger.error(`浏览器启动失败`)
-            }) 
+            })
     }
     async sendMessageToAds(url, method, data) {
         if (isExecuting) {
             return new Promise((resolve, reject) => {
-                queue.push({ url, resolve, reject }); // 如果有任务正在执行，将新任务放入队列
+                // 如果有任务正在执行，将新任务放入队列
+                queue.push({ url, method, data, resolve, reject });
             });
         }
+
         isExecuting = true;
         try {
-            await delay(500); // 等待 1 秒
-            const result = await axios[method](adsHost + url, data); // 执行请求
+            await delay(500); // 等待 500 毫秒（0.5秒）
+
+            // 发送 HTTP 请求
+            const result = await axios[method](adsHost + url, data);
+
+            // 任务完成，设置 isExecuting 为 false
             isExecuting = false;
-            // 查看队列中是否有下一个任务
+
+            // 如果队列中有更多任务，处理下一个任务
             if (queue.length > 0) {
                 const nextRequest = queue.shift(); // 取出队列中的下一个任务
-                sendMessageToAds(nextRequest.url)
+                this.sendMessageToAds(nextRequest.url, nextRequest.method, nextRequest.data)
                     .then(nextRequest.resolve)
                     .catch(nextRequest.reject); // 处理下一个任务
             }
-            return result; // 返回结果
+
+            return result; // 返回请求结果
         } catch (error) {
             isExecuting = false;
-            throw error;
+
+            // 确认错误处理时也检查队列
+            if (queue.length > 0) {
+                const nextRequest = queue.shift(); // 继续处理队列中的任务
+                this.sendMessageToAds(nextRequest.url, nextRequest.method, nextRequest.data)
+                    .then(nextRequest.resolve)
+                    .catch(nextRequest.reject);
+            }
+
+            throw error; // 抛出异常
         }
     }
 }
