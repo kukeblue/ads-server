@@ -7,6 +7,8 @@ const puppeteer = require('puppeteer');
 let isExecuting = false; // 用于标记是否请求正在进行中
 let queue = []; // 队列来保存需要执行的请求
 let maxBrowserScheduler = 5
+const jsFilePath = path.resolve(__dirname, 'shein_2.js');
+const jsContent = fs.readFileSync(jsFilePath, 'utf8');
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms)); // 延迟函数
 }
@@ -204,6 +206,111 @@ class BrowserScheduler {
         })
     }
 
+
+    async executeSheinTask(task, penddingBrowsers) {
+        
+        const { url, vendor } = task
+        const result = {}
+        this.sendMessageToAds(`/api/v1/browser/start?user_id=${penddingBrowsers.userId}&&open_tabs=1&&headless=0&&clear_cache_after_closing=1`, 'get')
+            .then((async res => {
+                if (res.status == 200 && res.data.code == 0) {
+                    logger.info(`浏览器启动成功 端口:${res.data.data.debug_port}`)
+                    let puppeteerUrl = res.data.data.ws.puppeteer
+                    const browser = await puppeteer.connect({
+                        browserWSEndpoint: puppeteerUrl,
+                        defaultViewport: null
+                    });
+                    // 获取所有已经打开的页面
+                    const pages = await browser.pages();
+                    // 使用第一个页面
+                    const page = pages[0];
+                    // 读取本地的 shein_2.js 文件内容
+                    
+                    // 启用请求拦截
+                    await page.setRequestInterception(true);
+                
+                    // 拦截特定的 JavaScript 文件并替换内容
+                    page.on('request', (request) => {
+                        const url = request.url();
+                        if (url.endsWith('81960-d6561fcee6ba2f3b.js')) {
+                            console.log(`替换js成功: ${url}`);
+                            // 替换为本地的 shein_2.js 文件内容，并添加 CORS 头
+                            request.respond({
+                                status: 200,
+                                contentType: 'application/javascript',
+                                headers: {
+                                    'Access-Control-Allow-Origin': '*',  // 允许跨域访问
+                                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                                    'Access-Control-Allow-Headers': 'Content-Type'
+                                },
+                                body: jsContent,  // 替换为自定义的 JS
+                            });
+                        } else {
+                            // 允许其他资源正常加载
+                            request.continue();
+                        }
+                    });
+                
+                    // 在第一个页面中导航到目标网站
+                    page.on('response', async (response) => {
+                        const url = response.url();
+                        if (url.includes('productInfo/quickView/get')) {
+                            try {
+                                const jsonResponse = await response.json();  // 获取响应的 JSON 数据
+                                console.log(`Intercepted JSON from ${url}:`, jsonResponse);
+                            
+                            } catch (error) {
+                                console.error('Error parsing JSON response:', error);
+                            }
+                        }
+                    });
+                    await page.goto('https://de.shein.com');
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    await page.evaluate(() => {
+                        let elements = document.querySelectorAll('.j-vue-coupon-package-container.c-vue-coupon');
+                        elements.forEach(element => element.remove());
+                        elements = document.querySelectorAll('.sui-modal.sui-modal__dialog');
+                        elements.forEach(element => element.remove());
+                    });
+                    // 滚动到页面底部
+                    await page.evaluate(() => {
+                        window.scrollTo(0, document.body.scrollHeight);
+                    });
+                    //   await page.waitForNetworkIdle({idleTime: 5000});  // 等待网络空闲
+                    await page.waitForSelector('.product-card__add-btn.price-wrapper__addbag-btn');
+                    // 点击第一个 class="product-card__add-btn price-wrapper__addbag-btn" 的按钮
+                    await page.click('.product-card__add-btn.price-wrapper__addbag-btn');
+                    await page.waitForSelector('.quick-view__info', {
+                        visible: true,  // 等待元素变得可见
+                        timeout: 30000  // 超时时间设置为 30 秒（默认为 30 秒）
+                    });
+                    // 在页面上下文中执行自定义的 JavaScript
+                    await page.evaluate(() => {
+                        window.ch.currentGoodsId = "11867229";
+                        console.log('Set window.ch.currentGoodsId to "11867229"');
+                    });
+                    await new Promise(resolve => setTimeout(resolve, 30000));
+                    // 断开 Puppeteer 与浏览器的连接，但不关闭浏览器
+                    await browser.disconnect();
+                }
+            })).catch(e => {
+                this.results[url] = '500:浏览器启动失败'
+                console.error(e)
+                const copy = JSON.parse(JSON.stringify(penddingBrowsers));
+                this.deleteBrowser(copy)
+                
+                penddingBrowsers.status = 'delete'
+                console.error(e)
+                logger.error(`浏览器启动失败`)
+            })
+
+
+        
+
+
+
+    }
+
     executeTask(task, penddingBrowsers) {
         // 启动浏览器
         const { url, vendor } = task
@@ -253,6 +360,8 @@ class BrowserScheduler {
                 logger.error(`浏览器启动失败`)
             })
     }
+
+
     async sendMessageToAds(url, method, data) {
         if (isExecuting) {
             return new Promise((resolve, reject) => {
