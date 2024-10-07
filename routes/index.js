@@ -20,13 +20,13 @@ router.get('/get_html', (req, res) => {
   const task = { vendor, url }
   browserScheduler.addTask(task)
   browserScheduler.getResult(url).then((data) => {
-    if (data.startsWith('500:no browsers')) {
+    if (data.startsWith('500:')) {
       res.status(500).send(data);
     } else if (data.startsWith('403:')) {
       res.status(403).send(data.replace('403:', ''));
     }
     else {
-      res.status(200).send(data);
+      res.status(200).type('text/plain').send(data);
     }
   }).catch((e) => {
     console.log(e)

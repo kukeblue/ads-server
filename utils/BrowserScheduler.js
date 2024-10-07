@@ -213,6 +213,16 @@ class BrowserScheduler {
                     
                 }
             })).catch(e=>{
+                this.sendMessageToAds(`/api/v1/browser/stop?user_id=${penddingBrowsers.userId}`, 'get').then((res)=>{
+                    console.log(res.data)
+                    logger.info(`关闭浏览器成功:${penddingBrowsers.userId}`)
+                    this.sendMessageToAds(`/api/v1/user/delete`, 'post', {user_ids: [penddingBrowsers.userId]}).then(res=>{
+                        console.log(res.data)
+                        logger.info(`删除浏览器成功:${penddingBrowsers.userId}`)
+                    })
+                })
+                this.results[url] = '500:浏览器启动失败'
+                penddingBrowsers.status = 'delete'
                 console.error(e)
                 logger.error(`浏览器启动失败`)
             }) 
